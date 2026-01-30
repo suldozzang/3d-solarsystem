@@ -1,160 +1,39 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
 
-// --- 물리 상수 ---
-const MU_SUN = 1.32712440018e20;
-const AU_TO_M = 149597870700;
-const DAY_TO_S = 86400;
+// 태양계 시뮬레이션 컴포넌트
+export default function SolarSystemSimulation() {
+  const canvasRef = useRef(null);
+  const [selectedPlanet, setSelectedPlanet] = useState(null);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [geminiApiKey, setGeminiApiKey] = useState('');
+  const [showApiInput, setShowApiInput] = useState(true);
+  const sceneRef = useRef(null);
+  const cameraRef = useRef(null);
+  const planetsRef = useRef([]);
+  const audioRef = useRef(null);
 
-// 가속도 계산 (기존 로직 유지)
-function orbital_dynamics_r(r_vec) {
-  const r_sq = r_vec[0] ** 2 + r_vec[1] ** 2 + r_vec[2] ** 2;
-  const r = Math.sqrt(r_sq);
-  return r_vec.map(val => -(MU_SUN / (r_sq * r)) * val);
-}
-
-// 심플렉트 적분 (기존 로직 유지)
-function symplectic_step(Y, dt) {
-  let R_prev = Y.slice(0, 3);
-  let V_prev = Y.slice(3, 6);
-  const A_prev = orbital_dynamics_r(R_prev);
-  const V_half = V_prev.map((v, i) => v + 0.5 * A_prev[i] * dt);
-  const R_next = R_prev.map((r, i) => r + V_half[i] * dt);
-  const A_next = orbital_dynamics_r(R_next);
-  const V_next = V_half.map((v, i) => v + 0.5 * A_next[i] * dt);
-  return [...R_next, ...V_next];
-}
-
-export default function SolarSystem3D() {
-  const mountRef = useRef(null);
-  const [isPlaying, setIsPlaying] = useState(true);
-  const [timeScale, setTimeScale] = useState(100000); // 3D에서는 빠른 움직임 관찰을 위해 높게 설정
-
-  // 행성 데이터 (제공해주신 데이터 기반)
+  // 행성 데이터
   const planetData = [
-    { name: '수성', nameEn: 'Mercury', color: 0x8c7853, size: 0.8, initialState: [4.91225e10, -3.95155e10, -7.02633e9, 3.48316e4, 4.09539e4, 2.76008e3], rot: 58.6 },
-    { name: '금성', nameEn: 'Venus', color: 0xffc649, size: 1.2, initialState: [-3.49841e10, -9.62386e10, -2.57004e9, 3.27914e4, -1.18944e4, -1.97059e3], rot: -243 },
-    { name: '지구', nameEn: 'Earth', color: 0x4a90e2, size: 1.3, initialState: [-1.13988e11, -9.00639e10, 1.83944e6, 2.14668e4, -2.69850e4, -3.99201e-1], rot: 1 },
-    { name: '화성', nameEn: 'Mars', color: 0xe27b58, size: 0.9, initialState: [-3.05355e11, 8.44825e10, -6.64901e9, -5.98991e3, -2.00030e4, -4.51061e2], rot: 1.026 },
-    // 목성 이상은 거리가 너무 멀어 화면 구성을 위해 거리 스케일링 필요
+    { name: '수성', nameEn: 'Mercury', size: 0.383, distance: 5, color: 0x8c7853, speed: 4.74, info: '태양에 가장 가까운 행성으로 표면 온도가 극심하게 변합니다.' },
+    { name: '금성', nameEn: 'Venus', size: 0.949, distance: 7, color: 0xffc649, speed: 3.50, info: '태양계에서 가장 뜨거운 행성이며 두꺼운 대기를 가지고 있습니다.' },
+    { name: '지구', nameEn: 'Earth', size: 1.0, distance: 10, color: 0x4169e1, speed: 2.98, info: '우리가 사는 푸른 행성이며 생명체가 존재하는 유일한 행성입니다.' },
+    { name: '화성', nameEn: 'Mars', size: 0.532, distance: 13, color: 0xcd5c5c, speed: 2.41, info: '붉은 행성으로 불리며 미래 인류 이주 후보지입니다.' },
+    { name: '목성', nameEn: 'Jupiter', size: 2.5, distance: 20, color: 0xdaa520, speed: 1.31, info: '태양계에서 가장 큰 행성이며 대적점이 유명합니다.' },
+    { name: '토성', nameEn: 'Saturn', size: 2.2, distance: 28, color: 0xf4a460, speed: 0.97, info: '아름다운 고리를 가진 행성입니다.' },
+    { name: '천왕성', nameEn: 'Uranus', size: 1.6, distance: 36, color: 0x4fd0e7, speed: 0.68, info: '옆으로 누워서 공전하는 독특한 행성입니다.' },
+    { name: '해왕성', nameEn: 'Neptune', size: 1.55, distance: 44, color: 0x4169e1, speed: 0.54, info: '태양계에서 가장 먼 행성이며 강력한 바람이 붑니다.' }
   ];
 
-  // 물리 상태 관리 Ref
-  const statesRef = useRef({});
-  const meshesRef = useRef({});
-
   useEffect(() => {
-    // 1. Scene 설정
+    if (!canvasRef.current) return;
+
+    // Three.js 씬 설정
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x000005);
-
-    // 2. 카메라 설정
-    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
-    camera.position.set(0, 50, 100);
-
-    // 3. 렌더러 설정
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    mountRef.current.appendChild(renderer.domElement);
-
-    // 4. 조명 설정
-    const sunLight = new THREE.PointLight(0xffffff, 2, 1000); // 태양 빛
-    scene.add(sunLight);
-    const ambientLight = new THREE.AmbientLight(0x404040, 0.5); // 우주 배경광
-    scene.add(ambientLight);
-
-    // 5. 태양 생성
-    const sunGeo = new THREE.SphereGeometry(5, 32, 32);
-    const sunMat = new THREE.MeshBasicMaterial({ color: 0xffcc00 });
-    const sun = new THREE.Mesh(sunGeo, sunMat);
-    scene.add(sun);
-
-    // 6. 행성 생성 및 초기 상태 설정
-    const textureLoader = new THREE.TextureLoader();
-    planetData.forEach(p => {
-      const geo = new THREE.SphereGeometry(p.size, 32, 32);
-      const mat = new THREE.MeshStandardMaterial({ color: p.color });
-      const mesh = new THREE.Mesh(geo, mat);
-      
-      scene.add(mesh);
-      meshesRef.current[p.nameEn] = mesh;
-      statesRef.current[p.nameEn] = [...p.initialState];
-
-      // 궤도 라인 (선택 사항)
-      const points = [];
-      const orbitGeo = new THREE.BufferGeometry().setFromPoints(points);
-      const orbitMat = new THREE.LineBasicMaterial({ color: p.color, transparent: true, opacity: 0.3 });
-      const orbitLine = new THREE.Line(orbitGeo, orbitMat);
-      scene.add(orbitLine);
-    });
-
-    // 7. 컨트롤
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-
-    // 8. 애니메이션 루프
-    let lastTime = Date.now();
-    const animate = () => {
-      requestAnimationFrame(animate);
-      
-      const now = Date.now();
-      const dt = (now - lastTime) / 1000;
-      lastTime = now;
-
-      if (isPlaying) {
-        const effectiveDt = dt * timeScale;
-        
-        planetData.forEach(p => {
-          // 물리 업데이트
-          const currentState = statesRef.current[p.nameEn];
-          const nextState = symplectic_step(currentState, effectiveDt);
-          statesRef.current[p.nameEn] = nextState;
-
-          // 3D 좌표 변환 (거리 축소 스케일 적용: 10^9 나눔)
-          const scale = 1e9;
-          const mesh = meshesRef.current[p.nameEn];
-          mesh.position.set(nextState[0] / scale, nextState[2] / scale, nextState[1] / scale);
-          
-          // 자전
-          mesh.rotation.y += (2 * Math.PI / (p.rot * DAY_TO_S)) * effectiveDt;
-        });
-      }
-
-      controls.update();
-      renderer.render(scene, camera);
-    };
-
-    animate();
-
-    // 클린업
-    return () => {
-      mountRef.current.removeChild(renderer.domElement);
-    };
-  }, []);
-
-  return (
-    <div style={{ width: '100%', height: '100vh', position: 'relative' }}>
-      <div ref={mountRef} style={{ width: '100%', height: '100%' }} />
-      
-      {/* UI 레이어 */}
-      <div style={{ position: 'absolute', top: 20, left: 20, color: 'white', background: 'rgba(0,0,0,0.5)', padding: '15px', borderRadius: '8px' }}>
-        <h2 style={{ fontSize: '1.2rem', fontWeight: 'bold' }}>3D 심플렉트 태양계</h2>
-        <div style={{ marginTop: '10px' }}>
-          <button onClick={() => setIsPlaying(!isPlaying)} style={{ padding: '5px 15px', marginRight: '10px' }}>
-            {isPlaying ? '일시정지' : '재생'}
-          </button>
-          <input 
-            type="range" min="1000" max="1000000" step="1000" 
-            value={timeScale} onChange={(e) => setTimeScale(Number(e.target.value))} 
-          />
-          <span style={{ marginLeft: '10px' }}>속도: {timeScale}x</span>
-        </div>
-        <p style={{ fontSize: '0.8rem', color: '#aaa', marginTop: '10px' }}>마우스 드래그: 회전 | 휠: 확대/축소</p>
-      </div>
-    </div>
-  );
-}
+    sceneRef.current = scene;
     
     const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
     camera.position.set(0, 30, 50);
